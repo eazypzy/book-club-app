@@ -30,18 +30,17 @@ function JoinForm() {
     }
 
     const upper = code.trim().toUpperCase();
-    const { data: club, error: lookupErr } = await supabase
-      .from("clubs")
-      .select("id")
-      .eq("invite_code", upper)
-      .maybeSingle();
+    const { data: clubId, error: lookupErr } = await supabase.rpc(
+      "find_club_by_invite_code",
+      { code: upper }
+    );
 
     if (lookupErr) {
       setError(lookupErr.message);
       setBusy(false);
       return;
     }
-    if (!club) {
+    if (!clubId) {
       setError("No club found with that code.");
       setBusy(false);
       return;
@@ -49,7 +48,7 @@ function JoinForm() {
 
     const { error: insertErr } = await supabase
       .from("club_members")
-      .insert({ club_id: club.id, user_id: user.id })
+      .insert({ club_id: clubId, user_id: user.id })
       .select();
 
     // Ignore duplicate-key, just route in.
@@ -59,7 +58,7 @@ function JoinForm() {
       return;
     }
 
-    router.push(`/clubs/${club.id}`);
+    router.push(`/clubs/${clubId}`);
   }
 
   return (
