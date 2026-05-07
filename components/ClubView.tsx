@@ -8,6 +8,7 @@ import MeetingForm from "./MeetingForm";
 import ReadingPace from "./ReadingPace";
 import ProgressPanel from "./ProgressPanel";
 import Discussions from "./Discussions";
+import EpubManager from "./EpubManager";
 import { formatDateTime } from "@/lib/utils";
 
 export default function ClubView({
@@ -126,32 +127,41 @@ export default function ClubView({
             </button>
           </div>
           {currentBook ? (
-            <div className="flex gap-4">
-              {currentBook.cover_url && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={currentBook.cover_url}
-                  alt={currentBook.title}
-                  className="h-32 rounded shadow-sm"
-                />
-              )}
-              <div className="space-y-1">
-                <div className="font-serif text-lg">{currentBook.title}</div>
-                {currentBook.author && (
-                  <div className="muted">by {currentBook.author}</div>
+            <>
+              <div className="flex gap-4">
+                {currentBook.cover_url && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={currentBook.cover_url}
+                    alt={currentBook.title}
+                    className="h-32 rounded shadow-sm"
+                  />
                 )}
-                {currentBook.page_count && (
-                  <div className="muted text-sm">
-                    {currentBook.page_count} pages
-                  </div>
-                )}
-                {currentBook.start_date && (
-                  <div className="muted text-sm">
-                    Started {currentBook.start_date}
-                  </div>
-                )}
+                <div className="space-y-1">
+                  <div className="font-serif text-lg">{currentBook.title}</div>
+                  {currentBook.author && (
+                    <div className="muted">by {currentBook.author}</div>
+                  )}
+                  {currentBook.page_count && (
+                    <div className="muted text-sm">
+                      {currentBook.page_count} pages
+                    </div>
+                  )}
+                  {currentBook.start_date && (
+                    <div className="muted text-sm">
+                      Started {currentBook.start_date}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
+              <EpubManager
+                clubId={club.id}
+                bookId={currentBook.id}
+                bookTitle={currentBook.title}
+                epubPath={currentBook.epub_path ?? null}
+                epubSizeBytes={currentBook.epub_size_bytes ?? null}
+              />
+            </>
           ) : (
             <p className="muted">No book picked yet.</p>
           )}
