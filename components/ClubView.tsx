@@ -35,6 +35,35 @@ export default function ClubView({
   const [showSearch, setShowSearch] = useState(false);
   const [busy, setBusy] = useState(false);
   const [copyMsg, setCopyMsg] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState("");
+  const [savingName, setSavingName] = useState(false);
+
+  const self = members.find((m: any) => m.user_id === currentUserId);
+  const selfDisplayName: string =
+    self?.profiles?.display_name ?? self?.profiles?.email ?? "";
+
+  function startEditName() {
+    setNameInput(selfDisplayName);
+    setEditingName(true);
+  }
+
+  async function saveName() {
+    const name = nameInput.trim();
+    if (!name) return;
+    setSavingName(true);
+    const { error } = await supabase
+      .from("profiles")
+      .update({ display_name: name })
+      .eq("id", currentUserId);
+    setSavingName(false);
+    if (error) {
+      alert(error.message);
+      return;
+    }
+    setEditingName(false);
+    router.refresh();
+  }
 
   const isOwner = club.created_by === currentUserId;
   const upcomingMeetings = useMemo(
@@ -170,14 +199,62 @@ export default function ClubView({
         <div className="card">
           <h2 className="h2 mb-2">Members ({members.length})</h2>
           <ul className="space-y-1 text-sm">
-            {members.map((m: any) => (
-              <li key={m.user_id} className="flex items-center justify-between">
-                <span>
-                  {m.profiles?.display_name ?? m.profiles?.email ?? m.user_id.slice(0, 8)}
-                </span>
-                <span className="muted text-xs">{m.role}</span>
-              </li>
-            ))}
+            {members.map((m: any) => {
+              const isSelf = m.user_id === currentUserId;
+              const displayName =
+                m.profiles?.display_name ?? m.profiles?.email ?? m.user_id.slice(0, 8);
+              return (
+                <li key={m.user_id} className="flex items-center justify-between gap-2">
+                  {isSelf && editingName ? (
+                    <span className="flex items-center gap-1 flex-1">
+                      <input
+                        autoFocus
+                        className="input text-sm py-1 px-2 flex-1"
+                        value={nameInput}
+                        onChange={(e) => setNameInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") saveName();
+                          if (e.key === "Escape") setEditingName(false);
+                        }}
+                        maxLength={60}
+                        disabled={savingName}
+                      />
+                      <button
+                        type="button"
+                        className="text-xs text-accent hover:underline disabled:opacity-50"
+                        onClick={saveName}
+                        disabled={savingName || !nameInput.trim()}
+                      >
+                        {savingName ? "..." : "save"}
+                      </button>
+                      <button
+                        type="button"
+                        className="text-xs muted hover:underline"
+                        onClick={() => setEditingName(false)}
+                        disabled={savingName}
+                      >
+                        cancel
+                      </button>
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-2">
+                      <span>{displayName}</span>
+                      {isSelf && (
+                        <button
+                          type="button"
+                          className="text-xs muted hover:underline"
+                          onClick={startEditName}
+                          title="Change your display name"
+                        >
+                          edit
+                        </button>
+                      )}
+                    </span>
+                  )}
+                  <span className="muted text-xs">{m.role}</span>
+                </li>
+              );
+            })}
           </ul>
         </div>
       </section>
