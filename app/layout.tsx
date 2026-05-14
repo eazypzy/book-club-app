@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
@@ -6,7 +6,23 @@ import SignOutButton from "@/components/SignOutButton";
 
 export const metadata: Metadata = {
   title: "Book Club",
-  description: "Read together. Stay on pace."
+  description: "Read together. Stay on pace.",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    title: "Book Club",
+    statusBarStyle: "default"
+  },
+  formatDetection: { telephone: false }
+};
+
+export const viewport: Viewport = {
+  themeColor: "#fbf8f1",
+  width: "device-width",
+  initialScale: 1,
+  // viewportFit: 'cover' is what exposes env(safe-area-inset-*) on iOS, which
+  // the in-app reader uses to respect the notch and home indicator.
+  viewportFit: "cover"
 };
 
 export default async function RootLayout({

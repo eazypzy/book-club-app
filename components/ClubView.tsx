@@ -187,8 +187,14 @@ export default function ClubView({
                 clubId={club.id}
                 bookId={currentBook.id}
                 bookTitle={currentBook.title}
+                pageCount={currentBook.page_count ?? null}
                 epubPath={currentBook.epub_path ?? null}
                 epubSizeBytes={currentBook.epub_size_bytes ?? null}
+                currentUserId={currentUserId}
+                myLastLocation={
+                  progress.find((p: any) => p.user_id === currentUserId)
+                    ?.last_location ?? null
+                }
               />
             </>
           ) : (

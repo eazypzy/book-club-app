@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import EpubReader from "./EpubReader";
 
 const MAX_BYTES = 50 * 1024 * 1024; // 50 MB
 
@@ -16,20 +17,27 @@ export default function EpubManager({
   clubId,
   bookId,
   bookTitle,
+  pageCount,
   epubPath,
-  epubSizeBytes
+  epubSizeBytes,
+  currentUserId,
+  myLastLocation
 }: {
   clubId: string;
   bookId: string;
   bookTitle: string;
+  pageCount: number | null;
   epubPath: string | null;
   epubSizeBytes: number | null;
+  currentUserId: string;
+  myLastLocation: string | null;
 }) {
   const router = useRouter();
   const supabase = createClient();
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState<"idle" | "uploading" | "downloading" | "removing">("idle");
   const [error, setError] = useState<string | null>(null);
+  const [reading, setReading] = useState(false);
 
   async function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -145,6 +153,13 @@ export default function EpubManager({
           </span>
           <button
             className="btn-primary text-sm"
+            onClick={() => setReading(true)}
+            disabled={busy !== "idle"}
+          >
+            Read
+          </button>
+          <button
+            className="btn-ghost text-sm"
             onClick={download}
             disabled={busy !== "idle"}
           >
@@ -186,6 +201,17 @@ export default function EpubManager({
         </div>
       )}
       {error && <div className="text-xs text-red-600">{error}</div>}
+      {reading && epubPath && (
+        <EpubReader
+          bookId={bookId}
+          bookTitle={bookTitle}
+          pageCount={pageCount}
+          epubPath={epubPath}
+          initialLocation={myLastLocation}
+          currentUserId={currentUserId}
+          onClose={() => setReading(false)}
+        />
+      )}
     </div>
   );
 }

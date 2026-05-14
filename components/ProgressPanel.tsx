@@ -43,20 +43,34 @@ export default function ProgressPanel({
     router.refresh();
   }
 
-  // Build a leaderboard.
+  const total = book.page_count ?? 0;
+
+  // Build a leaderboard. progress_pct (set by the in-app reader) wins over
+  // current_page (set by the manual form) when present.
   const rows = members
     .map((m: any) => {
       const p = progress.find((p: any) => p.user_id === m.user_id);
+      const pct =
+        p?.progress_pct != null
+          ? Number(p.progress_pct)
+          : total && p?.current_page
+          ? Math.min(100, (p.current_page / total) * 100)
+          : 0;
+      const page =
+        p?.current_page ??
+        (total && p?.progress_pct != null
+          ? Math.round((Number(p.progress_pct) / 100) * total)
+          : 0);
       return {
         userId: m.user_id,
         name: m.profiles?.display_name ?? m.profiles?.email ?? "Member",
-        page: p?.current_page ?? 0,
+        page,
+        pct,
+        viaReader: p?.progress_pct != null,
         updated: p?.updated_at ?? null
       };
     })
-    .sort((a, b) => b.page - a.page);
-
-  const total = book.page_count ?? 0;
+    .sort((a, b) => b.pct - a.pct);
 
   return (
     <div className="card space-y-3">
@@ -78,22 +92,26 @@ export default function ProgressPanel({
           {busy ? "..." : "Update"}
         </button>
       </form>
+      <p className="muted text-xs">
+        Or open the book with <strong>Read</strong> above and your progress
+        updates automatically.
+      </p>
       <ul className="space-y-1 text-sm">
         {rows.map((r) => {
-          const pct = total ? Math.min(100, Math.round((r.page / total) * 100)) : 0;
+          const pctRounded = Math.round(r.pct);
           return (
             <li key={r.userId}>
               <div className="flex justify-between">
                 <span>{r.name}</span>
                 <span className="muted">
-                  p.{r.page}
-                  {total ? ` / ${total} (${pct}%)` : ""}
+                  {total ? `p.${r.page} / ${total} ` : ""}
+                  ({pctRounded}%)
                 </span>
               </div>
               <div className="h-1.5 bg-black/10 rounded overflow-hidden">
                 <div
                   className="h-full bg-accent"
-                  style={{ width: `${pct}%` }}
+                  style={{ width: `${Math.min(100, r.pct)}%` }}
                 />
               </div>
             </li>

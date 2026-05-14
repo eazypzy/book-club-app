@@ -42,7 +42,7 @@ export default async function ClubPage({ params }: { params: { id: string } }) {
     const [pRes, dRes] = await Promise.all([
       supabase
         .from("reading_progress")
-        .select("user_id, current_page, updated_at")
+        .select("user_id, current_page, progress_pct, last_location, updated_at")
         .eq("book_id", currentBook.id),
       supabase
         .from("discussions")
