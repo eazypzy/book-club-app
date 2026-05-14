@@ -18,6 +18,51 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   });
 }
 
+// epub.js's book.coverUrl() resolves to null for any EPUB whose cover isn't
+// tagged the way it expects (very common). This walks the OPF manifest as a
+// fallback and pulls the image out via the archive.
+async function extractCoverBlob(book: any): Promise<Blob | null> {
+  try {
+    const url: string | null = await book.coverUrl();
+    if (url) {
+      const res = await fetch(url);
+      if (res.ok) return await res.blob();
+    }
+  } catch {}
+
+  try {
+    const manifest = book.packaging?.manifest;
+    if (!manifest) return null;
+    const items = Object.values(manifest) as any[];
+    const item =
+      items.find((i: any) => i?.properties?.includes?.("cover-image")) ??
+      items.find(
+        (i: any) =>
+          typeof i?.id === "string" &&
+          i.id.toLowerCase().includes("cover") &&
+          typeof i?.type === "string" &&
+          i.type.startsWith("image/")
+      ) ??
+      items.find(
+        (i: any) =>
+          typeof i?.type === "string" && i.type.startsWith("image/")
+      );
+    if (!item?.href) return null;
+    const archive: any = book.archive;
+    if (archive?.createUrl) {
+      const url = await archive.createUrl(item.href);
+      const res = await fetch(url);
+      if (res.ok) return await res.blob();
+    }
+    if (typeof archive?.getBlob === "function") {
+      const blob = await archive.getBlob(item.href);
+      if (blob) return blob as Blob;
+    }
+  } catch {}
+
+  return null;
+}
+
 export async function parseEpubMetadata(
   source: File | ArrayBuffer
 ): Promise<EpubMetadata> {
@@ -48,17 +93,11 @@ export async function parseEpubMetadata(
     } catch {}
 
     try {
-      const coverUrl: string | null = await book.coverUrl();
-      if (coverUrl) {
-        const res = await fetch(coverUrl);
-        if (res.ok) {
-          const blob = await res.blob();
-          // Keep covers small enough to live in a row. Most EPUB covers are
-          // already <200KB; we skip caching anything absurd.
-          if (blob.size <= 500 * 1024) {
-            coverDataUrl = await blobToDataUrl(blob);
-          }
-        }
+      const blob = await extractCoverBlob(book);
+      // Cap at 2 MB so the cover_url row stays reasonable. Most EPUB covers
+      // are well under that; anything bigger we just skip.
+      if (blob && blob.size <= 2 * 1024 * 1024) {
+        coverDataUrl = await blobToDataUrl(blob);
       }
     } catch {}
   } finally {

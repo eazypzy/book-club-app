@@ -342,6 +342,33 @@ export default function EpubReader({
       };
       window.addEventListener("keydown", onKey);
 
+      // Resize / orientation handling. epub.js's paginated flow needs an
+      // explicit resize when the container's dimensions change; without it,
+      // rotating to landscape and back leaves the rendition with stale
+      // pagination and broken layout. Debounced via rAF so a flurry of
+      // resize events from rotation only triggers one re-layout.
+      let resizeRaf: number | null = null;
+      const onResize = () => {
+        if (resizeRaf != null) cancelAnimationFrame(resizeRaf);
+        resizeRaf = requestAnimationFrame(() => {
+          resizeRaf = null;
+          const el = containerRef.current;
+          if (!el || !renditionRef.current) return;
+          try {
+            renditionRef.current.resize(el.clientWidth, el.clientHeight);
+          } catch {}
+          // Re-display at the last known CFI so we don't end up on the wrong
+          // page after the relayout.
+          if (currentCfi) {
+            try {
+              renditionRef.current.display(currentCfi);
+            } catch {}
+          }
+        });
+      };
+      window.addEventListener("resize", onResize);
+      window.addEventListener("orientationchange", onResize);
+
       // Compute the locations index for accurate percentage tracking. This
       // can take a few seconds on big books; once it's done, recompute and
       // emit the current page's % so the progress bar updates immediately.
@@ -370,6 +397,9 @@ export default function EpubReader({
       // Cleanup
       (rendition as any)._cleanup = () => {
         window.removeEventListener("keydown", onKey);
+        window.removeEventListener("resize", onResize);
+        window.removeEventListener("orientationchange", onResize);
+        if (resizeRaf != null) cancelAnimationFrame(resizeRaf);
       };
     }
 
