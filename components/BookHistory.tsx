@@ -23,6 +23,7 @@ type FinishedBook = {
   start_date: string | null;
   end_date: string | null;
   takeaways: string | null;
+  epub_path: string | null;
   discussions: Discussion[];
 };
 
@@ -68,6 +69,44 @@ function FinishedBookCard({
   );
   const [showDiscussions, setShowDiscussions] = useState(false);
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+  const [removing, setRemoving] = useState(false);
+  const [removed, setRemoved] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+
+  async function remove() {
+    if (
+      !confirm(
+        `Remove "${book.title}" from history? This permanently deletes its discussions, reading progress, and uploaded EPUB.`
+      )
+    )
+      return;
+    setRemoving(true);
+    setRemoveError(null);
+
+    // Storage isn't cascaded by the FK, so clear the file first. Best-effort:
+    // if it fails, surface the error and stop so we don't leave an orphan row.
+    if (book.epub_path) {
+      const { error: rmErr } = await supabase.storage
+        .from("book-files")
+        .remove([book.epub_path]);
+      if (rmErr) {
+        setRemoveError(rmErr.message);
+        setRemoving(false);
+        return;
+      }
+    }
+
+    const { error } = await supabase.from("books").delete().eq("id", book.id);
+    if (error) {
+      setRemoveError(error.message);
+      setRemoving(false);
+      return;
+    }
+    setRemoved(true);
+    router.refresh();
+  }
+
+  if (removed) return null;
 
   async function saveTakeaways() {
     if ((book.takeaways ?? "") === takeaways) return;
@@ -140,8 +179,8 @@ function FinishedBookCard({
         />
       </div>
 
-      {book.discussions.length > 0 && (
-        <div>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        {book.discussions.length > 0 ? (
           <button
             type="button"
             className="text-sm muted hover:text-ink"
@@ -149,6 +188,26 @@ function FinishedBookCard({
           >
             {showDiscussions ? "Hide" : "Show"} discussion ({book.discussions.length})
           </button>
+        ) : (
+          <span />
+        )}
+        <div className="flex items-center gap-3 text-xs">
+          {removeError && (
+            <span className="text-red-600">{removeError}</span>
+          )}
+          <button
+            type="button"
+            className="text-red-600 hover:underline disabled:opacity-50"
+            onClick={remove}
+            disabled={removing}
+          >
+            {removing ? "Removing…" : "Remove book"}
+          </button>
+        </div>
+      </div>
+
+      {book.discussions.length > 0 && (
+        <div>
           {showDiscussions && (
             <ul className="mt-2 space-y-3">
               {book.discussions.map((d) => {

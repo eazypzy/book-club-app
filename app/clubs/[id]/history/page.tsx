@@ -27,7 +27,7 @@ export default async function ClubHistoryPage({
   const { data: finishedBooks } = await supabase
     .from("books")
     .select(
-      "id, title, author, cover_url, page_count, start_date, end_date, takeaways, created_at"
+      "id, title, author, cover_url, page_count, start_date, end_date, takeaways, epub_path, created_at"
     )
     .eq("club_id", club.id)
     .eq("status", "finished")
