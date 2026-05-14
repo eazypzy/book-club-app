@@ -3,6 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { getCachedBook, putCachedBook } from "@/lib/offline/bookCache";
+import {
+  enqueueProgress,
+  flushQueue,
+  queueSize
+} from "@/lib/offline/progressQueue";
 
 type Theme = "day" | "night" | "sepia";
 
@@ -52,6 +58,10 @@ export default function EpubReader({
   const [currentHref, setCurrentHref] = useState<string>("");
   const [currentPage, setCurrentPage] = useState<number | null>(null);
   const [totalPages, setTotalPages] = useState<number | null>(null);
+  const [isOnline, setIsOnline] = useState<boolean>(
+    typeof navigator === "undefined" ? true : navigator.onLine
+  );
+  const [pendingSync, setPendingSync] = useState<number>(0);
   const [theme, setTheme] = useState<Theme>(() => {
     if (typeof window === "undefined") return "day";
     return (localStorage.getItem("bookclub_reader_theme") as Theme) || "day";
@@ -78,8 +88,9 @@ export default function EpubReader({
     };
   }, []);
 
-  // Write progress to Supabase (always returns the promise so the caller can
-  // await it on close).
+  // Write progress to Supabase. If offline or the request fails, enqueue
+  // locally so we can flush on reconnect. Always returns once the row is
+  // either persisted or safely queued — callers can await on close.
   async function writeProgress(cfi: string, percentage: number) {
     if (
       lastSavedRef.current.cfi === cfi &&
@@ -91,19 +102,49 @@ export default function EpubReader({
     const computedPage = pageCount
       ? Math.round((percentage / 100) * pageCount)
       : null;
-    await supabase.from("reading_progress").upsert(
-      {
+    const pct2 = Number(percentage.toFixed(2));
+
+    const tryRemote = async () => {
+      const { error } = await supabase.from("reading_progress").upsert(
+        {
+          user_id: currentUserId,
+          book_id: bookId,
+          progress_pct: pct2,
+          last_location: cfi,
+          current_page: computedPage ?? undefined,
+          updated_at: new Date().toISOString()
+        },
+        { onConflict: "user_id,book_id" }
+      );
+      return !error;
+    };
+
+    let ok = false;
+    if (typeof navigator !== "undefined" && navigator.onLine !== false) {
+      try {
+        ok = await tryRemote();
+      } catch {
+        ok = false;
+      }
+    }
+    if (!ok) {
+      await enqueueProgress({
         user_id: currentUserId,
         book_id: bookId,
-        progress_pct: Number(percentage.toFixed(2)),
+        progress_pct: pct2,
         last_location: cfi,
-        // Keep current_page in sync so the leaderboard works for both
-        // manual-entry users and reader users.
-        current_page: computedPage ?? undefined,
-        updated_at: new Date().toISOString()
-      },
-      { onConflict: "user_id,book_id" }
-    );
+        current_page: computedPage
+      });
+      try {
+        setPendingSync(await queueSize());
+      } catch {}
+      return;
+    }
+    // Successful write — opportunistically drain any prior queued rows.
+    try {
+      const { remaining } = await flushQueue(supabase);
+      setPendingSync(remaining);
+    } catch {}
   }
 
   // Save progress (debounced).
@@ -139,32 +180,43 @@ export default function EpubReader({
       setLoading(true);
       setError(null);
 
-      // 1. Get a signed URL we can fetch from.
-      const { data: signed, error: sErr } = await supabase.storage
-        .from("book-files")
-        .createSignedUrl(epubPath, 3600);
-      if (sErr || !signed?.signedUrl) {
-        if (!cancelled) {
-          setError(sErr?.message ?? "Could not load EPUB.");
-          setLoading(false);
-        }
-        return;
-      }
-
-      // 2. Fetch into an ArrayBuffer (epub.js handles ArrayBuffers reliably).
-      let buf: ArrayBuffer;
+      // 1. Try the offline cache first — lets users reopen books with no network.
+      let buf: ArrayBuffer | null = null;
       try {
-        const res = await fetch(signed.signedUrl);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        buf = await res.arrayBuffer();
-      } catch (e: any) {
-        if (!cancelled) {
-          setError(e?.message ?? "Network error fetching EPUB.");
-          setLoading(false);
+        buf = await getCachedBook(epubPath);
+      } catch {}
+
+      // 2. Cache miss → fetch via signed URL and write back to the cache.
+      if (!buf) {
+        const { data: signed, error: sErr } = await supabase.storage
+          .from("book-files")
+          .createSignedUrl(epubPath, 3600);
+        if (sErr || !signed?.signedUrl) {
+          if (!cancelled) {
+            setError(
+              navigator.onLine === false
+                ? "You're offline and this book isn't cached yet."
+                : sErr?.message ?? "Could not load EPUB."
+            );
+            setLoading(false);
+          }
+          return;
         }
-        return;
+        try {
+          const res = await fetch(signed.signedUrl);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          buf = await res.arrayBuffer();
+        } catch (e: any) {
+          if (!cancelled) {
+            setError(e?.message ?? "Network error fetching EPUB.");
+            setLoading(false);
+          }
+          return;
+        }
+        // Persist for next time — fire-and-forget.
+        if (buf) putCachedBook(epubPath, buf);
       }
-      if (cancelled) return;
+      if (cancelled || !buf) return;
 
       // 3. Init epub.js — dynamic import keeps it out of the server bundle.
       const ePub = (await import("epubjs")).default;
@@ -362,6 +414,40 @@ export default function EpubReader({
     onClose();
   }
 
+  // Track online status and drain queued progress writes on reconnect.
+  useEffect(() => {
+    let cancelled = false;
+    queueSize()
+      .then((n) => {
+        if (!cancelled) setPendingSync(n);
+      })
+      .catch(() => {});
+
+    async function drain() {
+      try {
+        const { remaining } = await flushQueue(supabase);
+        if (!cancelled) setPendingSync(remaining);
+      } catch {}
+    }
+    if (typeof navigator !== "undefined" && navigator.onLine) drain();
+
+    function onOnline() {
+      setIsOnline(true);
+      drain();
+    }
+    function onOffline() {
+      setIsOnline(false);
+    }
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Flush on tab hide / pagehide too — covers users who background the app
   // or close the tab without hitting the Close button.
   useEffect(() => {
@@ -403,7 +489,27 @@ export default function EpubReader({
         style={{ borderColor: theme === "night" ? "#333" : "rgba(0,0,0,0.1)" }}
       >
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium truncate">{bookTitle}</div>
+          <div className="text-sm font-medium truncate flex items-center gap-2">
+            <span className="truncate">{bookTitle}</span>
+            {!isOnline && (
+              <span
+                className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border opacity-80"
+                style={{ borderColor: "currentColor" }}
+                title="You're offline — progress will sync when you reconnect."
+              >
+                ● Offline
+              </span>
+            )}
+            {isOnline && pendingSync > 0 && (
+              <span
+                className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border opacity-80"
+                style={{ borderColor: "currentColor" }}
+                title={`${pendingSync} progress update${pendingSync === 1 ? "" : "s"} syncing…`}
+              >
+                Syncing {pendingSync}…
+              </span>
+            )}
+          </div>
           {chapterLabel && (
             <div className="text-xs opacity-70 truncate">{chapterLabel}</div>
           )}

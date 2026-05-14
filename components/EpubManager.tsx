@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import EpubReader from "./EpubReader";
+import { parseEpubMetadata } from "@/lib/epub-metadata";
 
 const MAX_BYTES = 50 * 1024 * 1024; // 50 MB
 
@@ -67,15 +68,23 @@ export default function EpubManager({
       return;
     }
 
-    const { data: userData } = await supabase.auth.getUser();
+    // Parse metadata in parallel with the auth lookup so the user doesn't
+    // wait twice. EPUB-derived page count is canonical — it matches what the
+    // in-app reader shows — so overwrite whatever was there before.
+    const [meta, { data: userData }] = await Promise.all([
+      parseEpubMetadata(file).catch(() => null),
+      supabase.auth.getUser()
+    ]);
+    const update: Record<string, any> = {
+      epub_path: path,
+      epub_size_bytes: file.size,
+      epub_uploaded_by: userData.user?.id ?? null,
+      epub_uploaded_at: new Date().toISOString()
+    };
+    if (meta?.pageCount) update.page_count = meta.pageCount;
     const { error: dbErr } = await supabase
       .from("books")
-      .update({
-        epub_path: path,
-        epub_size_bytes: file.size,
-        epub_uploaded_by: userData.user?.id ?? null,
-        epub_uploaded_at: new Date().toISOString()
-      })
+      .update(update)
       .eq("id", bookId);
     if (dbErr) {
       setError(dbErr.message);
