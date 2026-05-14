@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import BookSearchModal, { type OpenLibraryBook } from "./BookSearchModal";
+import ClubTabs from "./ClubTabs";
 import MeetingForm from "./MeetingForm";
 import ReadingPace from "./ReadingPace";
 import ProgressPanel from "./ProgressPanel";
@@ -86,7 +87,10 @@ export default function ClubView({
     if (currentBook) {
       await supabase
         .from("books")
-        .update({ status: "finished" })
+        .update({
+          status: "finished",
+          end_date: new Date().toISOString().slice(0, 10)
+        })
         .eq("id", currentBook.id);
     }
     await supabase.from("books").insert({
@@ -134,7 +138,10 @@ export default function ClubView({
       if (currentBook) {
         const { error: finishErr } = await supabase
           .from("books")
-          .update({ status: "finished" })
+          .update({
+            status: "finished",
+            end_date: new Date().toISOString().slice(0, 10)
+          })
           .eq("id", currentBook.id);
         if (finishErr) throw new Error(finishErr.message);
       }
@@ -239,6 +246,8 @@ export default function ClubView({
           </button>
         </div>
       </header>
+
+      <ClubTabs clubId={club.id} />
 
       <section className="grid lg:grid-cols-3 gap-4">
         <div className="card lg:col-span-2 space-y-3">
