@@ -8,6 +8,7 @@ export default function ClubTabs({ clubId }: { clubId: string }) {
   const base = `/clubs/${clubId}`;
   const tabs = [
     { href: base, label: "Current" },
+    { href: `${base}/leaderboard`, label: "Leaderboard" },
     { href: `${base}/history`, label: "History" }
   ];
 
