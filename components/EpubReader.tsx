@@ -753,18 +753,15 @@ export default function EpubReader({
         />
 
         {/*
-          Invisible tap/swipe overlay covering the reading surface. Single
-          handler distinguishes a tap (low movement) from a swipe by motion
-          and time. Taps in the outer thirds turn pages; a tap in the
-          middle toggles the top/bottom chrome — the Kindle / Apple Books
-          pattern.
+          Invisible tap/swipe overlay covering the reading surface. Only
+          swipes turn pages — page-turn-by-tap was removed because brushing
+          the edges with a thumb mid-scroll was too easy to do by accident.
+          Any tap toggles the top/bottom chrome.
         */}
         <TapSwipeLayer
           onSwipeLeft={() => renditionRef.current?.next()}
           onSwipeRight={() => renditionRef.current?.prev()}
-          onTapLeft={() => renditionRef.current?.prev()}
-          onTapRight={() => renditionRef.current?.next()}
-          onTapCenter={() => setChromeVisible((v) => !v)}
+          onTap={() => setChromeVisible((v) => !v)}
         />
       </main>
 
@@ -897,15 +894,11 @@ export default function EpubReader({
 function TapSwipeLayer({
   onSwipeLeft,
   onSwipeRight,
-  onTapLeft,
-  onTapRight,
-  onTapCenter
+  onTap
 }: {
   onSwipeLeft: () => void;
   onSwipeRight: () => void;
-  onTapLeft: () => void;
-  onTapRight: () => void;
-  onTapCenter: () => void;
+  onTap: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -943,7 +936,7 @@ function TapSwipeLayer({
       const adx = Math.abs(dx);
       const ady = Math.abs(dy);
 
-      // Swipe: dominant horizontal motion within a short window
+      // Swipe: dominant horizontal motion within a short window.
       if (
         dt <= SWIPE_MAX_MS &&
         adx >= SWIPE_MIN &&
@@ -953,29 +946,18 @@ function TapSwipeLayer({
         else onSwipeRight();
         return;
       }
-      // Tap: minimal movement, short duration
+      // Tap: minimal movement, short duration. Toggles chrome only —
+      // page turns are reserved for swipes so the edges aren't a trap.
       if (dt <= TAP_MAX_MS && adx <= TAP_MAX_MOVE && ady <= TAP_MAX_MOVE) {
-        const rect = el.getBoundingClientRect();
-        const x = t.clientX - rect.left;
-        const w = rect.width;
-        if (x < w * 0.3) onTapLeft();
-        else if (x > w * 0.7) onTapRight();
-        else onTapCenter();
+        onTap();
       }
     };
     const cancel = () => {
       tracking = false;
     };
-    // Also handle mouse clicks for desktop. Map by horizontal position the
-    // same way we do for taps so the desktop UX matches mobile.
-    const click = (e: MouseEvent) => {
-      const rect = el.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const w = rect.width;
-      if (x < w * 0.3) onTapLeft();
-      else if (x > w * 0.7) onTapRight();
-      else onTapCenter();
-    };
+    // Mouse clicks for desktop just toggle chrome too. Page turns on
+    // desktop come from keyboard arrows (handled inside the rendition).
+    const click = () => onTap();
 
     el.addEventListener("touchstart", start, { passive: true });
     el.addEventListener("touchend", end, { passive: true });
@@ -987,7 +969,7 @@ function TapSwipeLayer({
       el.removeEventListener("touchcancel", cancel);
       el.removeEventListener("click", click);
     };
-  }, [onSwipeLeft, onSwipeRight, onTapLeft, onTapRight, onTapCenter]);
+  }, [onSwipeLeft, onSwipeRight, onTap]);
 
   return (
     <div
