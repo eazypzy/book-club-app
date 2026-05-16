@@ -34,25 +34,28 @@ export default async function ClubPage({ params }: { params: { id: string } }) {
       .order("scheduled_at", { ascending: true })
   ]);
 
-  const currentBook = books?.find((b: any) => b.status === "current") ?? books?.[0] ?? null;
+  const currentBooks = (books ?? []).filter((b: any) => b.status === "current");
+  const currentIds = currentBooks.map((b: any) => b.id);
 
-  let progress: any[] = [];
-  let discussions: any[] = [];
-  if (currentBook) {
+  let progressByBook: Record<string, any[]> = {};
+  let discussionsByBook: Record<string, any[]> = {};
+  if (currentIds.length > 0) {
     const [pRes, dRes] = await Promise.all([
       supabase
         .from("reading_progress")
-        .select("user_id, current_page, progress_pct, last_location, updated_at")
-        .eq("book_id", currentBook.id),
+        .select("user_id, book_id, current_page, progress_pct, last_location, updated_at")
+        .in("book_id", currentIds),
       supabase
         .from("discussions")
         .select("*, profiles(display_name)")
-        .eq("book_id", currentBook.id)
+        .in("book_id", currentIds)
         .order("created_at", { ascending: false })
-        .limit(50)
+        .limit(50 * currentIds.length)
     ]);
-    progress = pRes.data ?? [];
-    discussions = dRes.data ?? [];
+    for (const id of currentIds) {
+      progressByBook[id] = (pRes.data ?? []).filter((p: any) => p.book_id === id);
+      discussionsByBook[id] = (dRes.data ?? []).filter((d: any) => d.book_id === id);
+    }
   }
 
   return (
@@ -62,9 +65,9 @@ export default async function ClubPage({ params }: { params: { id: string } }) {
       members={members ?? []}
       books={books ?? []}
       meetings={meetings ?? []}
-      currentBook={currentBook}
-      progress={progress}
-      discussions={discussions}
+      currentBooks={currentBooks}
+      progressByBook={progressByBook}
+      discussionsByBook={discussionsByBook}
     />
   );
 }

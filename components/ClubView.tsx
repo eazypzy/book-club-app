@@ -21,18 +21,18 @@ export default function ClubView({
   members,
   books,
   meetings,
-  currentBook,
-  progress,
-  discussions
+  currentBooks,
+  progressByBook,
+  discussionsByBook
 }: {
   club: any;
   currentUserId: string;
   members: any[];
   books: any[];
   meetings: any[];
-  currentBook: any | null;
-  progress: any[];
-  discussions: any[];
+  currentBooks: any[];
+  progressByBook: Record<string, any[]>;
+  discussionsByBook: Record<string, any[]>;
 }) {
   const router = useRouter();
   const supabase = createClient();
@@ -72,27 +72,10 @@ export default function ClubView({
     router.refresh();
   }
 
-  const isOwner = club.created_by === currentUserId;
-  const upcomingMeetings = useMemo(
-    () =>
-      meetings
-        .filter((m) => new Date(m.scheduled_at) >= new Date())
-        .sort((a, b) => +new Date(a.scheduled_at) - +new Date(b.scheduled_at)),
-    [meetings]
-  );
-
   async function pickBook(b: OpenLibraryBook) {
     setBusy(true);
-    // Mark previous current book as finished.
-    if (currentBook) {
-      await supabase
-        .from("books")
-        .update({
-          status: "finished",
-          end_date: new Date().toISOString().slice(0, 10)
-        })
-        .eq("id", currentBook.id);
-    }
+    // Multiple "current" books are allowed (e.g. a fiction + non-fiction
+    // track). Just insert the new one — don't auto-finish anything.
     await supabase.from("books").insert({
       club_id: club.id,
       title: b.title,
@@ -133,18 +116,8 @@ export default function ClubView({
       const fallbackTitle = file.name.replace(/\.epub$/i, "").trim() || "Untitled";
       const title = meta?.title?.trim() || fallbackTitle;
 
-      // 2. Mark previous current book as finished, then insert the new one.
+      // 2. Insert the new book alongside any existing current books.
       setEpubUploadStatus("Creating book…");
-      if (currentBook) {
-        const { error: finishErr } = await supabase
-          .from("books")
-          .update({
-            status: "finished",
-            end_date: new Date().toISOString().slice(0, 10)
-          })
-          .eq("id", currentBook.id);
-        if (finishErr) throw new Error(finishErr.message);
-      }
       const { data: inserted, error: insertErr } = await supabase
         .from("books")
         .insert({
@@ -202,6 +175,22 @@ export default function ClubView({
     }
   }
 
+  async function markFinished(bookId: string, title: string) {
+    if (!confirm(`Mark "${title}" as finished?`)) return;
+    const { error } = await supabase
+      .from("books")
+      .update({
+        status: "finished",
+        end_date: new Date().toISOString().slice(0, 10)
+      })
+      .eq("id", bookId);
+    if (error) {
+      alert(error.message);
+      return;
+    }
+    router.refresh();
+  }
+
   async function leaveClub() {
     if (!confirm("Leave this club?")) return;
     await supabase
@@ -219,6 +208,39 @@ export default function ClubView({
       setTimeout(() => setCopyMsg(null), 1500);
     });
   }
+
+  const addBookHeader = (
+    <div className="flex items-center justify-between gap-2 flex-wrap">
+      <h2 className="h2">
+        {currentBooks.length === 0
+          ? "Pick a book"
+          : `Current books (${currentBooks.length})`}
+      </h2>
+      <div className="flex items-center gap-2">
+        <label
+          className={`btn-ghost text-sm cursor-pointer ${busy ? "opacity-50 pointer-events-none" : ""}`}
+          title="Upload an EPUB — title, author, cover, and page count are detected automatically."
+        >
+          {epubUploadStatus ?? "Upload EPUB"}
+          <input
+            ref={directEpubInputRef}
+            type="file"
+            accept=".epub,application/epub+zip"
+            className="hidden"
+            onChange={onPickEpubDirect}
+            disabled={busy}
+          />
+        </label>
+        <button
+          className="btn-primary"
+          onClick={() => setShowSearch(true)}
+          disabled={busy}
+        >
+          {currentBooks.length === 0 ? "Pick a book" : "Add another"}
+        </button>
+      </div>
+    </div>
+  );
 
   return (
     <div className="space-y-6">
@@ -249,218 +271,95 @@ export default function ClubView({
 
       <ClubTabs clubId={club.id} />
 
-      <section className="grid lg:grid-cols-3 gap-4">
-        <div className="card lg:col-span-2 space-y-3">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <h2 className="h2">Current book</h2>
-            <div className="flex items-center gap-2">
-              <label
-                className={`btn-ghost text-sm cursor-pointer ${busy ? "opacity-50 pointer-events-none" : ""}`}
-                title="Upload an EPUB — title, author, cover, and page count are detected automatically."
-              >
-                {epubUploadStatus ?? "Upload EPUB"}
-                <input
-                  ref={directEpubInputRef}
-                  type="file"
-                  accept=".epub,application/epub+zip"
-                  className="hidden"
-                  onChange={onPickEpubDirect}
-                  disabled={busy}
-                />
-              </label>
-              <button
-                className="btn-primary"
-                onClick={() => setShowSearch(true)}
-                disabled={busy}
-              >
-                {currentBook ? "Change book" : "Pick a book"}
-              </button>
-            </div>
-          </div>
-          {epubUploadError && (
-            <div className="text-xs text-red-600">{epubUploadError}</div>
-          )}
-          {currentBook ? (
-            <>
-              <div className="flex gap-4">
-                {currentBook.cover_url && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={currentBook.cover_url}
-                    alt={currentBook.title}
-                    className="h-32 rounded shadow-sm"
-                  />
-                )}
-                <div className="space-y-1">
-                  <div className="font-serif text-lg">{currentBook.title}</div>
-                  {currentBook.author && (
-                    <div className="muted">by {currentBook.author}</div>
-                  )}
-                  {currentBook.page_count && (
-                    <div className="muted text-sm">
-                      {currentBook.page_count} pages
-                    </div>
-                  )}
-                  {currentBook.start_date && (
-                    <div className="muted text-sm">
-                      Started {currentBook.start_date}
-                    </div>
-                  )}
-                </div>
-              </div>
-              <EpubManager
-                clubId={club.id}
-                bookId={currentBook.id}
-                bookTitle={currentBook.title}
-                pageCount={currentBook.page_count ?? null}
-                epubPath={currentBook.epub_path ?? null}
-                epubSizeBytes={currentBook.epub_size_bytes ?? null}
-                currentUserId={currentUserId}
-                myLastLocation={
-                  progress.find((p: any) => p.user_id === currentUserId)
-                    ?.last_location ?? null
-                }
-              />
-            </>
-          ) : (
-            <p className="muted">No book picked yet.</p>
-          )}
-        </div>
+      <section className="card space-y-3">
+        {addBookHeader}
+        {epubUploadError && (
+          <div className="text-xs text-red-600">{epubUploadError}</div>
+        )}
+        {currentBooks.length === 0 && (
+          <p className="muted">
+            No book picked yet. Add a fiction and a non-fiction book to read
+            them in parallel — each gets its own meetings, discussion, and
+            pace.
+          </p>
+        )}
+      </section>
 
-        <div className="card">
-          <h2 className="h2 mb-2">Members ({members.length})</h2>
-          <ul className="space-y-1 text-sm">
-            {members.map((m: any) => {
-              const isSelf = m.user_id === currentUserId;
-              const displayName =
-                m.profiles?.display_name ?? m.profiles?.email ?? m.user_id.slice(0, 8);
-              return (
-                <li key={m.user_id} className="flex items-center justify-between gap-2">
-                  {isSelf && editingName ? (
-                    <span className="flex items-center gap-1 flex-1">
-                      <input
-                        autoFocus
-                        className="input text-sm py-1 px-2 flex-1"
-                        value={nameInput}
-                        onChange={(e) => setNameInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") saveName();
-                          if (e.key === "Escape") setEditingName(false);
-                        }}
-                        maxLength={60}
-                        disabled={savingName}
-                      />
-                      <button
-                        type="button"
-                        className="text-xs text-accent hover:underline disabled:opacity-50"
-                        onClick={saveName}
-                        disabled={savingName || !nameInput.trim()}
-                      >
-                        {savingName ? "..." : "save"}
-                      </button>
+      <section className="card">
+        <h2 className="h2 mb-2">Members ({members.length})</h2>
+        <ul className="space-y-1 text-sm">
+          {members.map((m: any) => {
+            const isSelf = m.user_id === currentUserId;
+            const displayName =
+              m.profiles?.display_name ?? m.profiles?.email ?? m.user_id.slice(0, 8);
+            return (
+              <li key={m.user_id} className="flex items-center justify-between gap-2">
+                {isSelf && editingName ? (
+                  <span className="flex items-center gap-1 flex-1">
+                    <input
+                      autoFocus
+                      className="input text-sm py-1 px-2 flex-1"
+                      value={nameInput}
+                      onChange={(e) => setNameInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") saveName();
+                        if (e.key === "Escape") setEditingName(false);
+                      }}
+                      maxLength={60}
+                      disabled={savingName}
+                    />
+                    <button
+                      type="button"
+                      className="text-xs text-accent hover:underline disabled:opacity-50"
+                      onClick={saveName}
+                      disabled={savingName || !nameInput.trim()}
+                    >
+                      {savingName ? "..." : "save"}
+                    </button>
+                    <button
+                      type="button"
+                      className="text-xs muted hover:underline"
+                      onClick={() => setEditingName(false)}
+                      disabled={savingName}
+                    >
+                      cancel
+                    </button>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-2">
+                    <span>{displayName}</span>
+                    {isSelf && (
                       <button
                         type="button"
                         className="text-xs muted hover:underline"
-                        onClick={() => setEditingName(false)}
-                        disabled={savingName}
+                        onClick={startEditName}
+                        title="Change your display name"
                       >
-                        cancel
+                        edit
                       </button>
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-2">
-                      <span>{displayName}</span>
-                      {isSelf && (
-                        <button
-                          type="button"
-                          className="text-xs muted hover:underline"
-                          onClick={startEditName}
-                          title="Change your display name"
-                        >
-                          edit
-                        </button>
-                      )}
-                    </span>
-                  )}
-                  <span className="muted text-xs">{m.role}</span>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
+                    )}
+                  </span>
+                )}
+                <span className="muted text-xs">{m.role}</span>
+              </li>
+            );
+          })}
+        </ul>
       </section>
 
-      <section className="grid lg:grid-cols-2 gap-4">
-        <div className="card space-y-3">
-          <h2 className="h2">Meetings</h2>
-          <MeetingForm
-            clubId={club.id}
-            bookId={currentBook?.id ?? null}
-            maxPages={currentBook?.page_count ?? null}
-          />
-          {upcomingMeetings.length === 0 ? (
-            <p className="muted">No meetings scheduled.</p>
-          ) : (
-            <ul className="space-y-2">
-              {upcomingMeetings.map((m) => (
-                <li key={m.id} className="border-t border-black/10 pt-2 text-sm">
-                  <div className="font-medium">{m.title}</div>
-                  <div className="muted">{formatDateTime(m.scheduled_at)}</div>
-                  {m.location && <div className="muted">{m.location}</div>}
-                  {m.page_target != null && (
-                    <div className="muted">Read through page {m.page_target}</div>
-                  )}
-                  <button
-                    className="text-xs text-red-600 hover:underline mt-1"
-                    onClick={async () => {
-                      if (!confirm("Delete this meeting?")) return;
-                      await supabase.from("meetings").delete().eq("id", m.id);
-                      router.refresh();
-                    }}
-                  >
-                    Delete
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div className="card space-y-3">
-          <h2 className="h2">Reading pace</h2>
-          {currentBook ? (
-            <ReadingPace
-              totalPages={currentBook.page_count ?? 0}
-              startDate={currentBook.start_date ?? new Date().toISOString().slice(0, 10)}
-              meetings={meetings.map((m) => ({
-                id: m.id,
-                title: m.title,
-                scheduledAt: m.scheduled_at,
-                pageTarget: m.page_target
-              }))}
-            />
-          ) : (
-            <p className="muted">Pick a book and add meetings to compute pace.</p>
-          )}
-        </div>
-      </section>
-
-      {currentBook && (
-        <section className="grid lg:grid-cols-2 gap-4">
-          <ProgressPanel
-            book={currentBook}
-            members={members}
-            progress={progress}
-            currentUserId={currentUserId}
-          />
-          <Discussions
-            clubId={club.id}
-            bookId={currentBook.id}
-            currentUserId={currentUserId}
-            initial={discussions}
-          />
-        </section>
-      )}
+      {currentBooks.map((book) => (
+        <BookTrack
+          key={book.id}
+          club={club}
+          book={book}
+          members={members}
+          currentUserId={currentUserId}
+          meetings={meetings.filter((m) => m.book_id === book.id)}
+          progress={progressByBook[book.id] ?? []}
+          discussions={discussionsByBook[book.id] ?? []}
+          onMarkFinished={() => markFinished(book.id, book.title)}
+        />
+      ))}
 
       {showSearch && (
         <BookSearchModal
@@ -470,5 +369,154 @@ export default function ClubView({
         />
       )}
     </div>
+  );
+}
+
+function BookTrack({
+  club,
+  book,
+  members,
+  currentUserId,
+  meetings,
+  progress,
+  discussions,
+  onMarkFinished
+}: {
+  club: any;
+  book: any;
+  members: any[];
+  currentUserId: string;
+  meetings: any[];
+  progress: any[];
+  discussions: any[];
+  onMarkFinished: () => void;
+}) {
+  const upcomingMeetings = useMemo(
+    () =>
+      meetings
+        .filter((m) => new Date(m.scheduled_at) >= new Date())
+        .sort((a, b) => +new Date(a.scheduled_at) - +new Date(b.scheduled_at)),
+    [meetings]
+  );
+
+  return (
+    <section className="space-y-4">
+      <div className="card space-y-3">
+        <div className="flex gap-4">
+          {book.cover_url && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={book.cover_url}
+              alt={book.title}
+              className="h-32 rounded shadow-sm"
+            />
+          )}
+          <div className="space-y-1 flex-1 min-w-0">
+            <div className="font-serif text-lg">{book.title}</div>
+            {book.author && <div className="muted">by {book.author}</div>}
+            {book.page_count && (
+              <div className="muted text-sm">{book.page_count} pages</div>
+            )}
+            {book.start_date && (
+              <div className="muted text-sm">Started {book.start_date}</div>
+            )}
+          </div>
+          <button
+            className="text-xs muted hover:text-ink self-start"
+            onClick={onMarkFinished}
+            title="Move this book to History"
+          >
+            Mark finished
+          </button>
+        </div>
+        <EpubManager
+          clubId={club.id}
+          bookId={book.id}
+          bookTitle={book.title}
+          pageCount={book.page_count ?? null}
+          epubPath={book.epub_path ?? null}
+          epubSizeBytes={book.epub_size_bytes ?? null}
+          currentUserId={currentUserId}
+          myLastLocation={
+            progress.find((p: any) => p.user_id === currentUserId)
+              ?.last_location ?? null
+          }
+        />
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-4">
+        <div className="card space-y-3">
+          <h2 className="h2">Meetings</h2>
+          <MeetingForm
+            clubId={club.id}
+            bookId={book.id}
+            maxPages={book.page_count ?? null}
+          />
+          {upcomingMeetings.length === 0 ? (
+            <p className="muted">No meetings scheduled.</p>
+          ) : (
+            <ul className="space-y-2">
+              {upcomingMeetings.map((m) => (
+                <MeetingItem key={m.id} meeting={m} />
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="card space-y-3">
+          <h2 className="h2">Reading pace</h2>
+          <ReadingPace
+            totalPages={book.page_count ?? 0}
+            startDate={book.start_date ?? new Date().toISOString().slice(0, 10)}
+            meetings={meetings.map((m) => ({
+              id: m.id,
+              title: m.title,
+              scheduledAt: m.scheduled_at,
+              pageTarget: m.page_target
+            }))}
+          />
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-4">
+        <ProgressPanel
+          book={book}
+          members={members}
+          progress={progress}
+          currentUserId={currentUserId}
+        />
+        <Discussions
+          clubId={club.id}
+          bookId={book.id}
+          currentUserId={currentUserId}
+          initial={discussions}
+        />
+      </div>
+    </section>
+  );
+}
+
+function MeetingItem({ meeting }: { meeting: any }) {
+  const router = useRouter();
+  const supabase = createClient();
+  return (
+    <li className="border-t border-black/10 pt-2 text-sm">
+      <div className="font-medium">{meeting.title}</div>
+      <div className="muted">{formatDateTime(meeting.scheduled_at)}</div>
+      {meeting.location && <div className="muted">{meeting.location}</div>}
+      {meeting.page_target != null && (
+        <div className="muted">Read through page {meeting.page_target}</div>
+      )}
+      <button
+        className="text-xs text-red-600 hover:underline mt-1"
+        onClick={async () => {
+          if (!confirm("Delete this meeting?")) return;
+          await supabase.from("meetings").delete().eq("id", meeting.id);
+          router.refresh();
+        }}
+      >
+        Delete
+      </button>
+    </li>
   );
 }

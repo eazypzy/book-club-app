@@ -342,6 +342,59 @@ export default function EpubReader({
       };
       window.addEventListener("keydown", onKey);
 
+      // Swipe-to-turn gestures. epub.js renders each spine item into an
+      // iframe, so touch events fire on the iframe's document and never
+      // bubble to the parent. Register a content hook to attach handlers to
+      // every rendered iframe.
+      const SWIPE_MIN_PX = 50;
+      const SWIPE_RATIO = 1.5; // dx must dominate dy to count as horizontal
+      const SWIPE_MAX_MS = 600;
+      function attachSwipe(target: EventTarget) {
+        let startX = 0;
+        let startY = 0;
+        let startT = 0;
+        let tracking = false;
+        const onStart = (ev: Event) => {
+          const e = ev as TouchEvent;
+          if (e.touches.length !== 1) {
+            tracking = false;
+            return;
+          }
+          const t = e.touches[0];
+          startX = t.clientX;
+          startY = t.clientY;
+          startT = Date.now();
+          tracking = true;
+        };
+        const onEnd = (ev: Event) => {
+          if (!tracking) return;
+          tracking = false;
+          const e = ev as TouchEvent;
+          const t = e.changedTouches[0];
+          if (!t) return;
+          const dx = t.clientX - startX;
+          const dy = t.clientY - startY;
+          const dt = Date.now() - startT;
+          if (dt > SWIPE_MAX_MS) return;
+          if (Math.abs(dx) < SWIPE_MIN_PX) return;
+          if (Math.abs(dx) < Math.abs(dy) * SWIPE_RATIO) return;
+          if (dx < 0) rendition.next();
+          else rendition.prev();
+        };
+        target.addEventListener("touchstart", onStart, { passive: true } as any);
+        target.addEventListener("touchend", onEnd, { passive: true } as any);
+        target.addEventListener("touchcancel", () => {
+          tracking = false;
+        }, { passive: true } as any);
+      }
+      rendition.hooks.content.register((contents: any) => {
+        try {
+          attachSwipe(contents.document);
+        } catch {}
+      });
+      // Also handle swipes that start in the page margins outside the iframe.
+      if (containerRef.current) attachSwipe(containerRef.current);
+
       // Resize / orientation handling. epub.js's paginated flow needs an
       // explicit resize when the container's dimensions change; without it,
       // rotating to landscape and back leaves the rendition with stale
