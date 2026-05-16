@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { getCachedBook, putCachedBook } from "@/lib/offline/bookCache";
@@ -62,6 +63,12 @@ export default function EpubReader({
     typeof navigator === "undefined" ? true : navigator.onLine
   );
   const [pendingSync, setPendingSync] = useState<number>(0);
+  // Chrome = the top/bottom UI bars. Kindle/Apple-Books style: tap center to
+  // toggle, default visible so first-time readers see the close button.
+  const [chromeVisible, setChromeVisible] = useState<boolean>(true);
+  // Portals need access to document.body, so wait until mount.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const [theme, setTheme] = useState<Theme>(() => {
     if (typeof window === "undefined") return "day";
     return (localStorage.getItem("bookclub_reader_theme") as Theme) || "day";
@@ -79,12 +86,30 @@ export default function EpubReader({
     localStorage.setItem("bookclub_reader_fontsize", String(fontSize));
   }, [fontSize]);
 
-  // Lock background scroll while reader is open
+  // Lock background scroll while reader is open. On iOS Safari, just setting
+  // `overflow: hidden` doesn't prevent the page underneath from showing
+  // through the address bar / rubber-banding. The position:fixed-with-top
+  // trick is the standard iOS-safe scroll lock — and we restore the
+  // scroll position on close so the user lands back where they were.
   useEffect(() => {
-    const prev = document.body.style.overflow;
+    const scrollY = window.scrollY;
+    const prev = {
+      position: document.body.style.position,
+      top: document.body.style.top,
+      left: document.body.style.left,
+      right: document.body.style.right,
+      width: document.body.style.width,
+      overflow: document.body.style.overflow
+    };
+    document.body.style.position = "fixed";
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.left = "0";
+    document.body.style.right = "0";
+    document.body.style.width = "100%";
     document.body.style.overflow = "hidden";
     return () => {
-      document.body.style.overflow = prev;
+      Object.assign(document.body.style, prev);
+      window.scrollTo(0, scrollY);
     };
   }, []);
 
@@ -484,6 +509,21 @@ export default function EpubReader({
     renditionRef.current?.themes?.fontSize(`${fontSize}%`);
   }, [fontSize]);
 
+  // When the chrome toggles, the page surface grows or shrinks. epub.js
+  // doesn't auto-relayout on container size changes, so trigger a resize
+  // after the chrome transition settles.
+  useEffect(() => {
+    const r = renditionRef.current;
+    const el = containerRef.current;
+    if (!r || !el) return;
+    const t = setTimeout(() => {
+      try {
+        r.resize(el.clientWidth, el.clientHeight);
+      } catch {}
+    }, 200);
+    return () => clearTimeout(t);
+  }, [chromeVisible]);
+
   const [closing, setClosing] = useState(false);
   async function close() {
     if (closing) return;
@@ -552,24 +592,53 @@ export default function EpubReader({
 
   const t = THEMES[theme];
 
-  return (
+  // max() gives the dynamic island / notch some breathing room when the
+  // browser doesn't expose a safe-area inset (e.g. older iOS, desktop).
+  const PAD_TOP = "max(env(safe-area-inset-top, 0px), 14px)";
+  const PAD_BOTTOM = "max(env(safe-area-inset-bottom, 0px), 8px)";
+
+  if (!mounted) return null;
+
+  const ui = (
     <div
-      className="fixed inset-0 z-50 flex flex-col"
+      className="flex flex-col"
       style={{
+        // Hard-pin to the viewport so no parent stacking context, transform,
+        // or scroll position can let the underlying page peek through.
+        position: "fixed",
+        inset: 0,
+        zIndex: 2147483000,
         background: t.bg,
         color: t.color,
-        // Use dynamic viewport height so Safari's address bar collapse doesn't
-        // hide the footer behind the home indicator.
+        // 100dvh accounts for the iOS URL-bar collapse without leaving a
+        // gap behind the home indicator.
         height: "100dvh",
-        paddingTop: "env(safe-area-inset-top)",
-        paddingBottom: "env(safe-area-inset-bottom)",
         paddingLeft: "env(safe-area-inset-left)",
-        paddingRight: "env(safe-area-inset-right)"
+        paddingRight: "env(safe-area-inset-right)",
+        // Top/bottom padding lives on the inner bars so the reading surface
+        // can still extend edge-to-edge when chrome is hidden.
+        overscrollBehavior: "contain",
+        touchAction: "manipulation"
       }}
     >
       <header
-        className="flex items-center justify-between gap-2 px-3 py-2 border-b flex-wrap sm:flex-nowrap"
-        style={{ borderColor: theme === "night" ? "#333" : "rgba(0,0,0,0.1)" }}
+        className="flex items-center justify-between gap-2 px-3 border-b transition-[opacity,transform] duration-200"
+        style={{
+          borderColor: theme === "night" ? "#333" : "rgba(0,0,0,0.1)",
+          paddingTop: `calc(${PAD_TOP} + 6px)`,
+          paddingBottom: "8px",
+          opacity: chromeVisible ? 1 : 0,
+          transform: chromeVisible ? "translateY(0)" : "translateY(-100%)",
+          pointerEvents: chromeVisible ? "auto" : "none",
+          background: t.bg,
+          // Hover the header above the reading area so its hide animation
+          // doesn't push the page surface around mid-read.
+          position: "absolute",
+          left: 0,
+          right: 0,
+          top: 0,
+          zIndex: 2
+        }}
       >
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium truncate flex items-center gap-2">
@@ -597,7 +666,7 @@ export default function EpubReader({
             <div className="text-xs opacity-70 truncate">{chapterLabel}</div>
           )}
         </div>
-        <div className="flex items-center gap-2 text-sm">
+        <div className="flex items-center gap-1.5 text-sm">
           <button
             className="px-2 py-1 rounded border"
             style={{ borderColor: "currentColor" }}
@@ -605,13 +674,13 @@ export default function EpubReader({
             title="Contents"
             disabled={toc.length === 0}
           >
-            ☰ Contents
+            ☰
           </button>
           <button
             className="px-2 py-1 rounded border"
             style={{ borderColor: "currentColor" }}
             onClick={() => setFontSize((v) => Math.max(80, v - 10))}
-            title="Smaller"
+            title="Smaller text"
           >
             A−
           </button>
@@ -619,7 +688,7 @@ export default function EpubReader({
             className="px-2 py-1 rounded border"
             style={{ borderColor: "currentColor" }}
             onClick={() => setFontSize((v) => Math.min(200, v + 10))}
-            title="Larger"
+            title="Larger text"
           >
             A+
           </button>
@@ -641,7 +710,7 @@ export default function EpubReader({
             onClick={close}
             disabled={closing}
           >
-            {closing ? "Saving…" : "Close"}
+            {closing ? "…" : "Done"}
           </button>
         </div>
       </header>
@@ -666,30 +735,55 @@ export default function EpubReader({
             </div>
           </div>
         )}
-        {/* Page surface — inset slightly so text doesn't get clipped by rounded
-            phone corners and so the iOS edge-swipe zone doesn't eat taps. */}
-        <div ref={containerRef} className="absolute inset-x-3 inset-y-2" />
-        <button
-          aria-label="Previous page"
-          onClick={() => renditionRef.current?.prev()}
-          className="absolute left-0 top-0 bottom-0 w-10 flex items-center justify-center text-2xl opacity-40 active:opacity-100 hover:opacity-100 transition-opacity touch-manipulation"
-          style={{ color: "currentColor" }}
-        >
-          ‹
-        </button>
-        <button
-          aria-label="Next page"
-          onClick={() => renditionRef.current?.next()}
-          className="absolute right-0 top-0 bottom-0 w-10 flex items-center justify-center text-2xl opacity-40 active:opacity-100 hover:opacity-100 transition-opacity touch-manipulation"
-          style={{ color: "currentColor" }}
-        >
-          ›
-        </button>
+        {/*
+          Page surface. We deliberately reserve room at the top equal to the
+          status-bar inset so even when chrome is hidden the first line of
+          text never falls under the dynamic island. The container itself
+          fills the rest.
+        */}
+        <div
+          ref={containerRef}
+          className="absolute"
+          style={{
+            top: `calc(${PAD_TOP} + 8px)`,
+            bottom: `calc(${PAD_BOTTOM} + 8px)`,
+            left: 12,
+            right: 12
+          }}
+        />
+
+        {/*
+          Invisible tap/swipe overlay covering the reading surface. Single
+          handler distinguishes a tap (low movement) from a swipe by motion
+          and time. Taps in the outer thirds turn pages; a tap in the
+          middle toggles the top/bottom chrome — the Kindle / Apple Books
+          pattern.
+        */}
+        <TapSwipeLayer
+          onSwipeLeft={() => renditionRef.current?.next()}
+          onSwipeRight={() => renditionRef.current?.prev()}
+          onTapLeft={() => renditionRef.current?.prev()}
+          onTapRight={() => renditionRef.current?.next()}
+          onTapCenter={() => setChromeVisible((v) => !v)}
+        />
       </main>
 
       <footer
-        className="px-3 py-2 border-t flex items-center gap-3 text-xs shrink-0"
-        style={{ borderColor: theme === "night" ? "#333" : "rgba(0,0,0,0.1)" }}
+        className="px-3 border-t flex items-center gap-3 text-xs shrink-0 transition-[opacity,transform] duration-200"
+        style={{
+          borderColor: theme === "night" ? "#333" : "rgba(0,0,0,0.1)",
+          paddingTop: "8px",
+          paddingBottom: `calc(${PAD_BOTTOM} + 6px)`,
+          opacity: chromeVisible ? 1 : 0,
+          transform: chromeVisible ? "translateY(0)" : "translateY(100%)",
+          pointerEvents: chromeVisible ? "auto" : "none",
+          background: t.bg,
+          position: "absolute",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          zIndex: 2
+        }}
       >
         <div
           className="flex-1 h-1.5 rounded overflow-hidden"
@@ -715,7 +809,8 @@ export default function EpubReader({
 
       {tocOpen && (
         <div
-          className="fixed inset-0 z-[60] flex"
+          className="fixed inset-0 flex"
+          style={{ zIndex: 2147483001 }}
           onClick={() => setTocOpen(false)}
         >
           <div
@@ -727,14 +822,15 @@ export default function EpubReader({
             style={{
               background: t.bg,
               color: t.color,
-              paddingTop: "env(safe-area-inset-top)",
-              paddingBottom: "env(safe-area-inset-bottom)"
+              paddingTop: PAD_TOP,
+              paddingBottom: PAD_BOTTOM
             }}
             onClick={(e) => e.stopPropagation()}
           >
             <div
-              className="sticky top-0 flex items-center justify-between px-3 py-2 border-b"
+              className="sticky flex items-center justify-between px-3 py-2 border-b"
               style={{
+                top: 0,
                 background: t.bg,
                 borderColor: theme === "night" ? "#333" : "rgba(0,0,0,0.1)"
               }}
@@ -789,5 +885,122 @@ export default function EpubReader({
         </div>
       )}
     </div>
+  );
+
+  // Portal to body so the reader cannot inherit a parent stacking context,
+  // transform, or filter — any of which would make `position: fixed`
+  // resolve to that ancestor and let the underlying app header bleed
+  // through.
+  return createPortal(ui, document.body);
+}
+
+function TapSwipeLayer({
+  onSwipeLeft,
+  onSwipeRight,
+  onTapLeft,
+  onTapRight,
+  onTapCenter
+}: {
+  onSwipeLeft: () => void;
+  onSwipeRight: () => void;
+  onTapLeft: () => void;
+  onTapRight: () => void;
+  onTapCenter: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    let sx = 0;
+    let sy = 0;
+    let st = 0;
+    let tracking = false;
+    const SWIPE_MIN = 50;
+    const SWIPE_RATIO = 1.5;
+    const SWIPE_MAX_MS = 600;
+    const TAP_MAX_MS = 350;
+    const TAP_MAX_MOVE = 10;
+
+    const start = (e: TouchEvent) => {
+      if (e.touches.length !== 1) {
+        tracking = false;
+        return;
+      }
+      const t = e.touches[0];
+      sx = t.clientX;
+      sy = t.clientY;
+      st = Date.now();
+      tracking = true;
+    };
+    const end = (e: TouchEvent) => {
+      if (!tracking) return;
+      tracking = false;
+      const t = e.changedTouches[0];
+      if (!t) return;
+      const dx = t.clientX - sx;
+      const dy = t.clientY - sy;
+      const dt = Date.now() - st;
+      const adx = Math.abs(dx);
+      const ady = Math.abs(dy);
+
+      // Swipe: dominant horizontal motion within a short window
+      if (
+        dt <= SWIPE_MAX_MS &&
+        adx >= SWIPE_MIN &&
+        adx >= ady * SWIPE_RATIO
+      ) {
+        if (dx < 0) onSwipeLeft();
+        else onSwipeRight();
+        return;
+      }
+      // Tap: minimal movement, short duration
+      if (dt <= TAP_MAX_MS && adx <= TAP_MAX_MOVE && ady <= TAP_MAX_MOVE) {
+        const rect = el.getBoundingClientRect();
+        const x = t.clientX - rect.left;
+        const w = rect.width;
+        if (x < w * 0.3) onTapLeft();
+        else if (x > w * 0.7) onTapRight();
+        else onTapCenter();
+      }
+    };
+    const cancel = () => {
+      tracking = false;
+    };
+    // Also handle mouse clicks for desktop. Map by horizontal position the
+    // same way we do for taps so the desktop UX matches mobile.
+    const click = (e: MouseEvent) => {
+      const rect = el.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const w = rect.width;
+      if (x < w * 0.3) onTapLeft();
+      else if (x > w * 0.7) onTapRight();
+      else onTapCenter();
+    };
+
+    el.addEventListener("touchstart", start, { passive: true });
+    el.addEventListener("touchend", end, { passive: true });
+    el.addEventListener("touchcancel", cancel, { passive: true });
+    el.addEventListener("click", click);
+    return () => {
+      el.removeEventListener("touchstart", start);
+      el.removeEventListener("touchend", end);
+      el.removeEventListener("touchcancel", cancel);
+      el.removeEventListener("click", click);
+    };
+  }, [onSwipeLeft, onSwipeRight, onTapLeft, onTapRight, onTapCenter]);
+
+  return (
+    <div
+      ref={ref}
+      className="absolute inset-0"
+      style={{
+        // Sits above the iframe; transparent so the page shows through.
+        zIndex: 1,
+        background: "transparent",
+        touchAction: "pan-y",
+        cursor: "pointer",
+        userSelect: "none"
+      }}
+    />
   );
 }
