@@ -259,12 +259,24 @@ export default function EpubReader({
       });
       renditionRef.current = rendition;
 
-      // Apply themes
+      // Apply themes. A taller line-height plus comfortable paragraph
+      // margins make the rendered text feel less cramped — and more
+      // importantly give epub.js's column-based pagination room to break
+      // cleanly, so the last visible line doesn't get half-clipped at the
+      // bottom of the page.
       Object.entries(THEMES).forEach(([name, t]) => {
         rendition.themes.register(name, {
-          body: { background: t.bg, color: t.color },
+          body: {
+            background: t.bg,
+            color: t.color,
+            "line-height": "1.55"
+          },
           a: { color: t.color },
-          "p, span, div, li": { color: t.color }
+          "p, span, div, li": { color: t.color },
+          p: {
+            "margin-top": "0.7em",
+            "margin-bottom": "0.7em"
+          }
         });
       });
       rendition.themes.select(theme);
@@ -736,19 +748,28 @@ export default function EpubReader({
           </div>
         )}
         {/*
-          Page surface. We deliberately reserve room at the top equal to the
-          status-bar inset so even when chrome is hidden the first line of
-          text never falls under the dynamic island. The container itself
-          fills the rest.
+          Page surface. The header and footer are absolutely-positioned
+          overlays, so the reading container must reserve room beneath
+          them — otherwise the first/last line of text sits behind the
+          chrome bars and gets clipped. We carve out ~64px top / ~52px
+          bottom when chrome is visible, and just enough room for the
+          dynamic island when it's hidden. The container resizes via
+          rendition.resize() on chrome toggle so epub.js re-paginates
+          against the new height.
         */}
         <div
           ref={containerRef}
           className="absolute"
           style={{
-            top: `calc(${PAD_TOP} + 8px)`,
-            bottom: `calc(${PAD_BOTTOM} + 8px)`,
-            left: 12,
-            right: 12
+            top: chromeVisible
+              ? `calc(${PAD_TOP} + 64px)`
+              : `calc(${PAD_TOP} + 20px)`,
+            bottom: chromeVisible
+              ? `calc(${PAD_BOTTOM} + 52px)`
+              : `calc(${PAD_BOTTOM} + 20px)`,
+            left: 14,
+            right: 14,
+            transition: "top 200ms ease, bottom 200ms ease"
           }}
         />
 
