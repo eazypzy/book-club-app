@@ -3,6 +3,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import ClubTabs from "@/components/ClubTabs";
 import Leaderboard from "@/components/Leaderboard";
+import BooksFinishedRanking from "@/components/BooksFinishedRanking";
 import { computeLeaderboard } from "@/lib/leaderboard";
 
 export default async function ClubLeaderboardPage({
@@ -66,6 +67,7 @@ export default async function ClubLeaderboardPage({
         <h1 className="h1 mt-1">Leaderboard</h1>
       </header>
       <ClubTabs clubId={club.id} />
+      <BooksFinishedRanking rows={rows} currentUserId={user.id} />
       <Leaderboard rows={rows} currentUserId={user.id} />
     </div>
   );
