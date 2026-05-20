@@ -3,6 +3,7 @@ import "./globals.css";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import SignOutButton from "@/components/SignOutButton";
+import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
 
 export const metadata: Metadata = {
   title: "Book Club",
@@ -38,6 +39,7 @@ export default async function RootLayout({
   return (
     <html lang="en">
       <body className="min-h-screen">
+        <ServiceWorkerRegister />
         <header className="border-b border-black/10 bg-paper">
           <div className="mx-auto max-w-5xl px-4 py-3 flex items-center justify-between">
             <Link href="/" className="font-serif text-xl text-ink">

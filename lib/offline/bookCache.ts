@@ -29,3 +29,11 @@ export async function putCachedBook(
     // Quota or other IDB errors — caching is best-effort, swallow.
   }
 }
+
+export async function removeCachedBook(path: string): Promise<void> {
+  try {
+    await tx<undefined>(STORE_BOOKS, "readwrite", (s) => s.delete(path));
+  } catch {
+    // Best-effort — caller doesn't need to know if there was nothing to clear.
+  }
+}
