@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import BookSearchModal, { type OpenLibraryBook } from "./BookSearchModal";
@@ -10,10 +10,7 @@ import ReadingPace from "./ReadingPace";
 import ProgressPanel from "./ProgressPanel";
 import Discussions from "./Discussions";
 import EpubManager from "./EpubManager";
-import { parseEpubMetadata } from "@/lib/epub-metadata";
 import { formatDateTime } from "@/lib/utils";
-
-const MAX_EPUB_BYTES = 50 * 1024 * 1024; // mirrors EpubManager
 
 export default function ClubView({
   club,
@@ -42,9 +39,6 @@ export default function ClubView({
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState("");
   const [savingName, setSavingName] = useState(false);
-  const [epubUploadStatus, setEpubUploadStatus] = useState<string | null>(null);
-  const [epubUploadError, setEpubUploadError] = useState<string | null>(null);
-  const directEpubInputRef = useRef<HTMLInputElement>(null);
 
   const self = members.find((m: any) => m.user_id === currentUserId);
   const selfDisplayName: string =
@@ -91,90 +85,6 @@ export default function ClubView({
     router.refresh();
   }
 
-  async function onPickEpubDirect(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (directEpubInputRef.current) directEpubInputRef.current.value = "";
-    setEpubUploadError(null);
-
-    if (!file.name.toLowerCase().endsWith(".epub")) {
-      setEpubUploadError("Pick a .epub file.");
-      return;
-    }
-    if (file.size > MAX_EPUB_BYTES) {
-      setEpubUploadError(
-        `File is ${(file.size / 1024 / 1024).toFixed(1)} MB; max is 50 MB.`
-      );
-      return;
-    }
-
-    setBusy(true);
-    try {
-      // 1. Parse metadata before touching the DB so we can use it on insert.
-      setEpubUploadStatus("Reading EPUB…");
-      const meta = await parseEpubMetadata(file).catch(() => null);
-      const fallbackTitle = file.name.replace(/\.epub$/i, "").trim() || "Untitled";
-      const title = meta?.title?.trim() || fallbackTitle;
-
-      // 2. Insert the new book alongside any existing current books.
-      setEpubUploadStatus("Creating book…");
-      const { data: inserted, error: insertErr } = await supabase
-        .from("books")
-        .insert({
-          club_id: club.id,
-          title,
-          author: meta?.author ?? null,
-          cover_url: meta?.coverDataUrl ?? null,
-          page_count: meta?.pageCount ?? null,
-          status: "current",
-          start_date: new Date().toISOString().slice(0, 10)
-        })
-        .select("id")
-        .single();
-      if (insertErr || !inserted) {
-        throw new Error(insertErr?.message ?? "Could not create book.");
-      }
-      const newBookId: string = inserted.id;
-
-      // 3. Upload the EPUB into the book-files bucket.
-      setEpubUploadStatus("Uploading EPUB…");
-      const path = `${club.id}/${newBookId}.epub`;
-      const { error: upErr } = await supabase.storage
-        .from("book-files")
-        .upload(path, file, {
-          upsert: true,
-          contentType: "application/epub+zip"
-        });
-      if (upErr) {
-        // Roll back the book row so the club doesn't get a current book with
-        // no file attached.
-        await supabase.from("books").delete().eq("id", newBookId);
-        throw new Error(upErr.message);
-      }
-
-      // 4. Link the file back to the book row.
-      const { data: userData } = await supabase.auth.getUser();
-      const { error: linkErr } = await supabase
-        .from("books")
-        .update({
-          epub_path: path,
-          epub_size_bytes: file.size,
-          epub_uploaded_by: userData.user?.id ?? null,
-          epub_uploaded_at: new Date().toISOString()
-        })
-        .eq("id", newBookId);
-      if (linkErr) throw new Error(linkErr.message);
-
-      setEpubUploadStatus(null);
-      router.refresh();
-    } catch (err: any) {
-      setEpubUploadError(err?.message ?? "Upload failed.");
-      setEpubUploadStatus(null);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function markFinished(bookId: string, title: string) {
     if (!confirm(`Mark "${title}" as finished?`)) return;
     const { error } = await supabase
@@ -217,20 +127,9 @@ export default function ClubView({
           : `Current books (${currentBooks.length})`}
       </h2>
       <div className="flex items-center gap-2">
-        <label
-          className={`btn-ghost text-sm cursor-pointer ${busy ? "opacity-50 pointer-events-none" : ""}`}
-          title="Upload an EPUB — title, author, cover, and page count are detected automatically."
-        >
-          {epubUploadStatus ?? "Upload EPUB"}
-          <input
-            ref={directEpubInputRef}
-            type="file"
-            accept=".epub,application/epub+zip"
-            className="hidden"
-            onChange={onPickEpubDirect}
-            disabled={busy}
-          />
-        </label>
+        <a className="btn-ghost text-sm" href={`/clubs/${club.id}/library`}>
+          Upload EPUB
+        </a>
         <button
           className="btn-primary"
           onClick={() => setShowSearch(true)}
@@ -273,14 +172,11 @@ export default function ClubView({
 
       <section className="card space-y-3">
         {addBookHeader}
-        {epubUploadError && (
-          <div className="text-xs text-red-600">{epubUploadError}</div>
-        )}
         {currentBooks.length === 0 && (
           <p className="muted">
-            No book picked yet. Add a fiction and a non-fiction book to read
-            them in parallel — each gets its own meetings, discussion, and
-            pace.
+            No book picked yet. Upload an EPUB from your Library or pick one
+            by title to start a track — each book gets its own meetings,
+            discussion, and pace.
           </p>
         )}
       </section>
