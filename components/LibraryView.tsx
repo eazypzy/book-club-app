@@ -13,6 +13,13 @@ import {
 
 const MAX_BYTES = 50 * 1024 * 1024; // 50 MB — mirrors EpubManager & storage bucket cap.
 
+type EpubMetaSafe = {
+  title: string | null;
+  author: string | null;
+  pageCount: number | null;
+  coverDataUrl: string | null;
+};
+
 type LibraryBook = {
   id: string;
   title: string;
@@ -95,76 +102,122 @@ export default function LibraryView({
 
     setBusy(true);
     try {
-      // 1. Parse metadata so the book row has a title/author/cover up front.
-      setStatus("Reading EPUB…");
-      const meta = await parseEpubMetadata(file).catch(() => null);
+      // Read the file once and reuse the buffer for upload, offline cache,
+      // and metadata parsing. File.arrayBuffer() can be slow on phones, no
+      // sense doing it twice.
+      setStatus("Reading file…");
+      const buf = await file.arrayBuffer();
+
+      // Kick off metadata parsing in the background with a hard timeout —
+      // book.locations.generate() can take 30s+ on a big book, and we don't
+      // want the upload blocked on it. If it stalls, we fall back to using
+      // the filename as the title.
       const fallbackTitle =
         file.name.replace(/\.epub$/i, "").trim() || "Untitled";
-      const title = meta?.title?.trim() || fallbackTitle;
+      const metaPromise: Promise<EpubMetaSafe> = Promise.race([
+        parseEpubMetadata(buf).then((m) => ({
+          title: m.title,
+          author: m.author,
+          pageCount: m.pageCount,
+          coverDataUrl: m.coverDataUrl
+        })),
+        new Promise<EpubMetaSafe>((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                title: null,
+                author: null,
+                pageCount: null,
+                coverDataUrl: null
+              }),
+            8000
+          )
+        )
+      ]).catch(
+        (): EpubMetaSafe => ({
+          title: null,
+          author: null,
+          pageCount: null,
+          coverDataUrl: null
+        })
+      );
 
-      // 2. Insert a "library" book row. We use status='library' so it doesn't
-      // automatically become the active reading track — the user picks that
-      // explicitly with Start reading.
+      // 1. Insert a book row right away so we have an id to key the upload
+      //    against. Use the filename as title; we'll patch in real metadata
+      //    once parsing finishes.
       setStatus("Adding to library…");
       const { data: inserted, error: insertErr } = await supabase
         .from("books")
         .insert({
           club_id: clubId,
-          title,
-          author: meta?.author ?? null,
-          cover_url: meta?.coverDataUrl ?? null,
-          page_count: meta?.pageCount ?? null,
+          title: fallbackTitle,
           status: "library",
           start_date: new Date().toISOString().slice(0, 10)
         })
         .select("id")
         .single();
       if (insertErr || !inserted) {
-        throw new Error(insertErr?.message ?? "Could not create book row.");
+        throw new Error(
+          insertErr?.message ?? "Could not create book row."
+        );
       }
       const newBookId: string = inserted.id;
 
-      // 3. Upload to Supabase Storage.
+      // 2. Upload to Supabase Storage. This is the critical step — if it
+      //    fails we roll back the book row so we don't leave an orphan.
       setStatus("Uploading…");
       const path = `${clubId}/${newBookId}.epub`;
       const { error: upErr } = await supabase.storage
         .from("book-files")
-        .upload(path, file, {
+        .upload(path, buf, {
           upsert: true,
           contentType: "application/epub+zip"
         });
       if (upErr) {
-        // Roll back so we don't leave an orphan book with no file.
         await supabase.from("books").delete().eq("id", newBookId);
         throw new Error(upErr.message);
       }
 
-      // 4. Link the file path to the book row.
+      // 3. Link the file path and merge in any metadata we managed to parse
+      //    (or null fields if parsing timed out).
+      setStatus("Finalising…");
       const { data: userData } = await supabase.auth.getUser();
+      const meta = await metaPromise;
+      const patch: Record<string, any> = {
+        epub_path: path,
+        epub_size_bytes: file.size,
+        epub_uploaded_by: userData.user?.id ?? null,
+        epub_uploaded_at: new Date().toISOString()
+      };
+      if (meta.title?.trim()) patch.title = meta.title.trim();
+      if (meta.author) patch.author = meta.author;
+      if (meta.coverDataUrl) patch.cover_url = meta.coverDataUrl;
+      if (meta.pageCount) patch.page_count = meta.pageCount;
       const { error: linkErr } = await supabase
         .from("books")
-        .update({
-          epub_path: path,
-          epub_size_bytes: file.size,
-          epub_uploaded_by: userData.user?.id ?? null,
-          epub_uploaded_at: new Date().toISOString()
-        })
+        .update(patch)
         .eq("id", newBookId);
       if (linkErr) throw new Error(linkErr.message);
 
-      // 5. Cache the bytes locally so the book is available offline
-      // immediately — no need to open it once on wifi before flying.
+      // 4. Stash the bytes in IndexedDB for airplane-mode reading.
       try {
-        setStatus("Saving for offline…");
-        const buf = await file.arrayBuffer();
         await putCachedBook(path, buf);
       } catch {}
 
       setStatus(null);
       router.refresh();
     } catch (err: any) {
-      setError(err?.message ?? "Upload failed.");
+      const msg =
+        err?.message ||
+        err?.error_description ||
+        (typeof err === "string" ? err : null) ||
+        "Upload failed.";
+      setError(msg);
       setStatus(null);
+      // Surface the full error in the console too — handy for diagnosing
+      // RLS / storage errors that have terse messages.
+      // eslint-disable-next-line no-console
+      console.error("Library upload failed:", err);
     } finally {
       setBusy(false);
     }
